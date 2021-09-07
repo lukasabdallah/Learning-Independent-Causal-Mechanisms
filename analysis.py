@@ -5,13 +5,14 @@ import os
 import numpy as np
 
 import torch
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from torchvision import datasets as datasets_torch
 from torchvision import transforms
 
 from model import Expert, Discriminator
 from utils import init_weights
+
 
 def test_trained_models(experts, discriminator, data_train, args, files):
     # Iterate through data
@@ -45,9 +46,11 @@ def test_trained_models(experts, discriminator, data_train, args, files):
     for i in range(args.num_experts):
         files[i].close()
 
+
 if __name__ == '__main__':
     # Arguments
-    parser = argparse.ArgumentParser(description='Learning Independent Causal Mechanisms')
+    parser = argparse.ArgumentParser(
+        description='Learning Independent Causal Mechanisms')
     parser.add_argument('--datadir', default='./data', type=str,
                         help='path to the directory that contains the data')
     parser.add_argument('--outdir', default='.', type=str,
@@ -100,10 +103,12 @@ if __name__ == '__main__':
         dataset = getattr(datasets_torch, args.dataset)
         train_transform = transforms.Compose([transforms.ToTensor()])
         kwargs_train = {'download': True, 'transform': train_transform}
-        dataset_train = dataset(root='{}/{}'.format(args.datadir, args.dataset), train=True, **kwargs_train)
+        dataset_train = dataset(
+            root='{}/{}'.format(args.datadir, args.dataset), train=True, **kwargs_train)
     else:
         # Custom dataset
-        dataset_train = getattr(importlib.import_module('{}'.format(args.dataset)), 'PatientsDataset')(args)
+        dataset_train = getattr(importlib.import_module(
+            '{}'.format(args.dataset)), 'PatientsDataset')(args)
 
     # Create Dataloader from dataset
     data_train = DataLoader(
