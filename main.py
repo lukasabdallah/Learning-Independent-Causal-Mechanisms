@@ -81,7 +81,7 @@ def initialize_expert(epochs, expert, i, optimizer, loss, data_train, args, writ
     torch.save(expert.state_dict(), path)
 
 
-def train_system(epoch, experts, discriminator, optimizers_E, optimizer_D, criterion, data_train, data_labels, args, writer, transformation_dict):
+def train_system(epoch, experts, discriminator, optimizers_E, optimizer_D, criterion, data_train, data_labels, args, writers, transformation_dict):
     """
     Iteration in chronological order:
     1. sample minibatch of noised data
@@ -114,23 +114,12 @@ def train_system(epoch, experts, discriminator, optimizers_E, optimizer_D, crite
     for epoch in range(args.epochs):
         # Iterate through data
         for step, (batch_train, batch_label) in enumerate(zip(data_train, data_labels)):
-            # x_canon = x_transformed
-            # X_transf = identity
-            # x_canon, x_transf = batch
-            # x_canon, _ = batch_train
-            # x_transf, _ = batch_label
-            # x_transf = torch.randn(x_canon.size()) # TODO temporary since do not have the preturbed data yet
-            # batch_size = x_canon.size(0)
-            # n_samples += batch_size
-            # x_canon = x_canon.view(batch_size, -1).to(args.device)
-            # x_transf = x_transf.view(batch_size, -1).to(args.device)
-            # ----------------------------------
+
             total_step = total_step + 1
             x_noise, transformation_idx = batch_train
             x_canon, _ = batch_label
             batch_size = x_noise.size(0)
             n_samples += batch_size
-            # print(x_canon.size())
 
             # Train Discriminator on canonical distribution
             scores_canon = discriminator(x_canon)
@@ -141,33 +130,23 @@ def train_system(epoch, experts, discriminator, optimizers_E, optimizer_D, crite
             loss_D_canon.backward()
 
             # Train Discriminator on experts output
-            # labels.fill_(transformed_label)
             loss_D_transformed = 0
             exp_outputs = []
             expert_scores = []
             for i, expert in enumerate(experts):
                 exp_output = expert(x_noise)
-                # print(exp_output.size())
-                # exp_outputs.append(exp_output.view(batch_size, 1, args.input_size))
                 exp_outputs.append(exp_output)
                 exp_scores = discriminator(exp_output.detach())
                 expert_scores.append(exp_scores)
                 loss_D_transformed += criterion(exp_scores,
                                                 torch.zeros_like(exp_scores))
 
+            # Log expert scores
             for sample_idx, transf_idx in enumerate(transformation_idx):
-                expert_scores_dict = {}
-                # expert_scores_tensor = torch.as_tensor(expert_scores)
-                # print(expert_scores_tensor.squeeze().size())
-                # print(expert_scores_tensor.squeeze())
-                # [tensor[[][][][][]], [[][][][][]], [[][][][][]]]]
                 for i in range(len(expert_scores)):
-                    expert = i
                     score = expert_scores[i].squeeze()[sample_idx].item()
-                    expert_scores_dict[f"expert{expert}"] = score
-
-                writer.add_scalars(
-                    f'D(E(X))__{transformation_dict[transf_idx]}', expert_scores_dict, global_step=total_step)
+                    writers[i].add_scalar(
+                        f'D(E(X))__{transformation_dict[transf_idx]}', score, global_step=total_step)
 
             loss_D_transformed = loss_D_transformed / args.num_experts
             total_loss_D_transformed += loss_D_transformed.item() * batch_size
@@ -176,35 +155,24 @@ def train_system(epoch, experts, discriminator, optimizers_E, optimizer_D, crite
 
             # Train experts
             exp_outputs = torch.cat(exp_outputs, dim=1)
-            # print("exp_outputs")
-            # print(exp_outputs.size())
             expert_scores_cat = torch.cat(expert_scores, dim=1)
-            # print("expert_scores:")
-            # print(expert_scores)
-            # print(expert_scores.size())
             mask_winners = expert_scores_cat.argmax(dim=1)
+
             # Update each expert on samples it won
             for i, expert in enumerate(experts):
                 winning_indexes = mask_winners.eq(i).nonzero().squeeze(dim=-1)
-                # print("winning_indexes")
-                # print(winning_indexes)
+
                 accrue = 0 if step == 0 else 1
                 expert_winning_samples_idx[i] += (winning_indexes +
                                                   accrue*n_samples).tolist()
                 n_expert_samples = winning_indexes.size(0)
-                won_samples_per_batch = 0
                 if n_expert_samples > 0:
                     total_samples_expert[i] += n_expert_samples
                     exp_samples = exp_outputs[winning_indexes, i].unsqueeze(
                         dim=1)
-                    # print("exp_samples")
-                    # print(exp_samples.size())
+
                     D_E_x_transf = discriminator(exp_samples)
                     # D_E_x_transf = expert_scores[i][winning_indexes]
-                    # print("D_E_x_transf")
-                    # print(D_E_x_transf)
-                    # print("EXP_SCORES")
-                    # print(expert_scores[winning_indexes, i])
 
                     loss_E = criterion(
                         D_E_x_transf, torch.ones_like(D_E_x_transf))
@@ -212,7 +180,7 @@ def train_system(epoch, experts, discriminator, optimizers_E, optimizer_D, crite
                     optimizers_E[i].zero_grad()
                     # TODO figure out why retain graph is necessary
                     loss_E.backward(retain_graph=True)
-                    # loss_E.backward()
+                    loss_E.backward()
                     optimizers_E[i].step()
                     expert_scores_D[i] += D_E_x_transf.squeeze().sum().item()
 
@@ -220,17 +188,17 @@ def train_system(epoch, experts, discriminator, optimizers_E, optimizer_D, crite
                     exp_samples_grid = torchvision.utils.make_grid(exp_samples)
                     noisy_references_grid = torchvision.utils.make_grid(
                         noisy_references)
-                    writer.add_image(
+                    writers[i].add_image(
                         f'Expert_{i}_won_transformed_samples', exp_samples_grid, global_step=total_step)
-                    writer.add_image(
+                    writers[i].add_image(
                         f'Expert_{i}_won_noise_samples', noisy_references_grid, global_step=total_step)
-            # optimizer_D.step()
+
             if (step+1) % 10 == 0:
                 print(
                     f'Epoch [{epoch +1}], Step [{step+1}/{total_step_per_episode}], Total Step [{total_step}]')
-                writer.add_scalar(
+                writers[-1].add_scalar(
                     f"Discriminator_loss_average_over_all_experts", loss_D_transformed, global_step=total_step)
-                writer.add_scalar(
+                writers[-1].add_scalar(
                     f"Discriminator_loss_canonical", loss_D_canon, global_step=total_step)
 
             if (total_step == 2000):
@@ -313,43 +281,26 @@ def train_system_paper(epoch, experts, discriminator, optimizers_E, optimizer_D,
 
             # Log expert scores
             for sample_idx, transf_idx in enumerate(transformation_idx):
-                expert_scores_dict = {}
-                # expert_scores_tensor = torch.as_tensor(expert_scores)
-                # print(expert_scores_tensor.squeeze().size())
-                # print(expert_scores_tensor.squeeze())
-                # [tensor[[][][][][]], [[][][][][]], [[][][][][]]]]
                 for i in range(len(exp_scores)):
-                    expert = i
                     score = exp_scores[i].squeeze()[sample_idx].item()
-                    # expert_scores_dict[f"expert{expert}"] = score
                     writers[i].add_scalar(
                         f'D(E(X))__{transformation_dict[transf_idx]}', score, global_step=total_step)
-
-                # writer.add_scalars(
-                #     f'D(E(X))__{transformation_dict[transf_idx]}', expert_scores_dict, global_step=total_step)
 
             # ----------------------------------------------------------------------------------------------------------------
             # 6) Train experts
             exp_outputs_cat = torch.cat(exp_outputs, dim=1)
-            # print(exp_scores)
             exp_scores_cat = torch.cat(exp_scores, dim=1)
-            # print(exp_scores_cat)
             mask_winners = exp_scores_cat.argmax(dim=1)
             # Update each expert on samples it won
             for i, expert in enumerate(experts):
                 winning_indexes = mask_winners.eq(i).nonzero().squeeze(dim=-1)
-                # print(winning_indexes)
                 n_expert_samples = winning_indexes.size(0)
 
                 if n_expert_samples > 0:
                     exp_samples = exp_outputs_cat[winning_indexes, i].unsqueeze(
                         dim=1)
-                    # D_E_x_transf = exp_scores[winning_indexes, i]
-                    # print(exp_scores[i][winning_indexes])
                     D_E_x_transf = exp_scores[i][winning_indexes]
                     # D_E_x_transf_ = discriminator(exp_samples.detach())
-                    # print(D_E_x_transf)
-                    # print(D_E_x_transf_)
 
                     loss_E = criterion(
                         D_E_x_transf, torch.ones_like(D_E_x_transf))
@@ -374,14 +325,10 @@ def train_system_paper(epoch, experts, discriminator, optimizers_E, optimizer_D,
             # update gradients with backtransformed data
             optimizer_D.zero_grad()
             loss_D_transformed = 0
-            # for score in exp_scores:
-            #     #l = - log(1-x)
-            #     loss_D_transformed += criterion(score,
-            #                                     torch.zeros_like(score))
+
             for output in exp_outputs:
                 # l = - log(1-x)
                 score = discriminator(output.detach())
-                # print(score)
                 loss_D_transformed += criterion(score,
                                                 torch.zeros_like(score))
             loss_D_transformed /= args.num_experts
@@ -698,5 +645,5 @@ if __name__ == '__main__':
     os.mkdir(discriminator_log_dir)
     writers.append(SummaryWriter(log_dir=discriminator_log_dir))
 
-    train_system_paper(args.epochs, experts, discriminator, optimizers_E,
-                       optimizer_D, criterion, data_train, data_labels, args, writers, transformation_dict)
+    train_system(args.epochs, experts, discriminator, optimizers_E,
+                 optimizer_D, criterion, data_train, data_labels, args, writers, transformation_dict)
